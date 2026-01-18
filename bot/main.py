@@ -446,7 +446,7 @@ def build_app() -> Application:
             S_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_amount)],
             S_FEE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_fee)],
             S_CONFIRM: [CallbackQueryHandler(on_confirm_buttons, pattern=r"^(sent|cancel)$")],
-            S_PROOF: [MessageHandler((filters.TEXT | filters.PHOTO | filters.DOCUMENT) & ~filters.COMMAND, on_proof)],
+            S_PROOF: [MessageHandler((filters.TEXT | filters.PHOTO | filters.DOCUMENT.ALL) & ~filters.COMMAND, on_proof)],
         },
         fallbacks=[CallbackQueryHandler(on_cancel_any, pattern=r"^cancel$"), CommandHandler("start", cmd_start)],
         allow_reentry=True,
