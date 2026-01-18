@@ -1,0 +1,64 @@
+# Edit ONLY this file (and .env) to customize:
+# - bank account details
+# - crypto deposit addresses
+# - estimated transfer times
+
+fiat_currencies:
+  - PLN
+  - TRY
+
+crypto_currencies:
+  - USDT
+  - USDC
+  - SOL
+  - ETH
+
+# Bank details shown when the user needs to send fiat to you
+bank_accounts:
+  PLN:
+    bank_name: "Your Polish Bank"
+    account_holder: "YOUR NAME / COMPANY"
+    iban: "PL00 0000 0000 0000 0000 0000 0000"
+    swift: "XXXXXXXX"
+    title_hint: "Use the ORDER ID as transfer title / reference"
+  TRY:
+    bank_name: "Your Turkish Bank"
+    account_holder: "YOUR NAME / COMPANY"
+    iban: "TR00 0000 0000 0000 0000 0000 00"
+    swift: "XXXXXXXX"
+    title_hint: "Use the ORDER ID as transfer description"
+
+# Crypto addresses shown when the user needs to send crypto to you
+crypto_deposit_addresses:
+  USDT:
+    network_note: "Prefer TRC20 (example)"
+    address: "PUT_YOUR_USDT_ADDRESS_HERE"
+  USDC:
+    network_note: "Prefer ERC20 (example)"
+    address: "PUT_YOUR_USDC_ADDRESS_HERE"
+  SOL:
+    network_note: "Solana network"
+    address: "PUT_YOUR_SOL_ADDRESS_HERE"
+  ETH:
+    network_note: "ERC20 / Ethereum mainnet"
+    address: "PUT_YOUR_ETH_ADDRESS_HERE"
+
+# Estimated transfer times displayed AFTER the user submits TXID or receipt
+# You can override per direction + pair.
+estimated_transfer_times:
+  defaults:
+    crypto_to_fiat: "15-60 minutes"
+    fiat_to_crypto: "10-45 minutes"
+
+  # Optional overrides per pair (FROM -> TO)
+  overrides:
+    crypto_to_fiat:
+      USDT->TRY: "10-30 minutes"
+      USDT->PLN: "15-60 minutes"
+      SOL->TRY: "15-90 minutes"
+      ETH->PLN: "20-120 minutes"
+    fiat_to_crypto:
+      PLN->USDT: "10-45 minutes"
+      TRY->USDT: "10-45 minutes"
+      PLN->ETH: "15-90 minutes"
+      TRY->SOL: "15-90 minutes"
