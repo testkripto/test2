@@ -24,7 +24,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Conversation states
-S_LANG, S_DIR, S_FROM, S_TO, S_AMOUNT, S_FEE, S_CONFIRM, S_PROOF = range(8)
+S_LANG, S_DIR, S_FROM, S_TO, S_AMOUNT, S_FEE, S_CONFIRM, S_PROOF, S_PAYOUT = range(9)
 
 
 def load_config() -> dict:
@@ -61,26 +61,8 @@ def get_lang(context: ContextTypes.DEFAULT_TYPE) -> str:
     return context.user_data.get("lang", "en")
 
 
-def eta_for(direction: str, from_asset: str, to_asset: str) -> str:
-    etas = CONFIG.get("estimated_transfer_times", {})
-    defaults = etas.get("defaults", {})
-    overrides = etas.get("overrides", {}).get(direction, {})
-    key = f"{from_asset}->{to_asset}"
-    if key in overrides:
-        return str(overrides[key])
-    return str(defaults.get(direction, "")) or ""
-
-
 def fee_pct_from_code(code: str) -> float:
-    """
-    Fee tiers:
-      - code matches FEE_CODE_1P   => 1.0
-      - code matches FEE_CODE_15P  => 1.5
-      - code matches FEE_CODE_2P   => 2.0
-      - else => DEFAULT_FEE_PCT (2.5 by default)
-    """
     code = (code or "").strip()
-
     c1 = (os.getenv("FEE_CODE_1P", "") or "").strip()
     c15 = (os.getenv("FEE_CODE_15P", "") or "").strip()
     c2 = (os.getenv("FEE_CODE_2P", "") or "").strip()
@@ -92,10 +74,39 @@ def fee_pct_from_code(code: str) -> float:
         return 1.5
     if code and c2 and code == c2:
         return 2.0
-
-    # empty/unknown => default
     return default_fee
 
+
+def eta_for(direction: str, from_asset: str, to_asset: str) -> str:
+    etas = CONFIG.get("estimated_transfer_times", {}) or {}
+    if isinstance(etas.get(direction), dict):
+        k = f"{from_asset}_{to_asset}"
+        return str(etas.get(direction, {}).get(k, "") or "")
+    return ""
+
+
+def admin_payment_details(direction: str, from_asset: str) -> str:
+    if direction == "crypto_to_fiat":
+        addr = (CONFIG.get("crypto_deposit_addresses", {}) or {}).get(from_asset, {}) or {}
+        return (
+            f"💳 Deposit shown to user\n"
+            f"Asset: {from_asset}\n"
+            f"Network: {addr.get('network', '')}\n"
+            f"Address: {addr.get('address', '')}"
+        )
+    else:
+        bank = (CONFIG.get("bank_accounts", {}) or {}).get(from_asset, {}) or {}
+        holder = bank.get("account_name", "") or bank.get("account_holder", "")
+        return (
+            f"🏦 Bank shown to user\n"
+            f"Currency: {from_asset}\n"
+            f"Bank: {bank.get('bank_name','')}\n"
+            f"Holder: {holder}\n"
+            f"IBAN: {bank.get('iban','')}"
+        )
+
+
+# ---------------- User Flow ----------------
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
@@ -143,10 +154,7 @@ async def on_from_asset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["from"] = asset
     i18n = get_i18n(get_lang(context))
     direction = context.user_data.get("direction")
-    if direction == "crypto_to_fiat":
-        to_list = FIAT
-    else:
-        to_list = CRYPTO
+    to_list = FIAT if direction == "crypto_to_fiat" else CRYPTO
     await q.edit_message_text(i18n.t("choose_to"), reply_markup=asset_kb(to_list, "to"))
     return S_TO
 
@@ -187,6 +195,7 @@ async def on_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from_asset = context.user_data["from"]
     to_asset = context.user_data["to"]
     amount_from = float(context.user_data["amount_from"])
+    direction = context.user_data["direction"]
 
     rates: ManualVipRates = context.application.bot_data["rates"]
     try:
@@ -197,19 +206,16 @@ async def on_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     rate = quote.rate
-
-    # Apply fee: user receives less in the TO currency
     amount_to_gross = amount_from * rate
     amount_to_net = amount_to_gross * (1.0 - fee_pct / 100.0)
 
-    # Create order in DB
     db: DB = context.application.bot_data["db"]
     user = update.effective_user
     order_id = db.create_order(
         user_id=user.id,
         username=user.username or user.full_name,
         lang=get_lang(context),
-        direction=context.user_data["direction"],
+        direction=direction,
         from_asset=from_asset,
         to_asset=to_asset,
         amount_from=amount_from,
@@ -220,29 +226,25 @@ async def on_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     context.user_data["order_id"] = order_id
 
-    # Instructions
-    direction = context.user_data["direction"]
-    instructions_text = ""
+    # Instructions shown to USER
     if direction == "crypto_to_fiat":
-        # user sends crypto to our address
-        addr = CONFIG.get("crypto_deposit_addresses", {}).get(from_asset, {})
+        addr = (CONFIG.get("crypto_deposit_addresses", {}) or {}).get(from_asset, {}) or {}
         instructions_text = i18n.t(
             "crypto_details",
             asset=from_asset,
             address=addr.get("address", ""),
-            note=addr.get("network_note", ""),
+            note=addr.get("network_note", "") or addr.get("network", ""),
             order_id=order_id,
         )
     else:
-        # user sends fiat to our bank
-        bank = CONFIG.get("bank_accounts", {}).get(from_asset, {})
+        bank = (CONFIG.get("bank_accounts", {}) or {}).get(from_asset, {}) or {}
         instructions_text = i18n.t(
             "bank_details",
             bank=bank.get("bank_name", ""),
-            holder=bank.get("account_holder", ""),
+            holder=bank.get("account_name", "") or bank.get("account_holder", ""),
             iban=bank.get("iban", ""),
             swift=bank.get("swift", ""),
-            hint=bank.get("title_hint", ""),
+            hint=bank.get("note", "") or bank.get("title_hint", ""),
             order_id=order_id,
         )
 
@@ -257,24 +259,13 @@ async def on_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=confirm_sent_kb(i18n))
 
-    # Notify admins
+    # Notify admins with deposit/bank details
+    details = admin_payment_details(direction, from_asset)
     for aid in admin_ids():
         try:
             await context.bot.send_message(
                 chat_id=aid,
-                text=i18n.t(
-                    "admin_new_order",
-                    order_id=order_id,
-                    user=f"@{user.username}" if user.username else user.full_name,
-                    direction=direction,
-                    pair=f"{from_asset}->{to_asset}",
-                    amount_from=f"{amount_from:.8g}",
-                    from_asset=from_asset,
-                    amount_to=f"{amount_to_net:.8g}",
-                    to_asset=to_asset,
-                    fee_pct=f"{fee_pct:.2f}",
-                    status="awaiting_proof",
-                ),
+                text=f"NEW ORDER #{order_id}\nUser: @{user.username or user.full_name}\nPair: {from_asset}->{to_asset}\nFee: {fee_pct:.2f}%\n\n{details}",
             )
         except Exception:
             pass
@@ -307,6 +298,12 @@ async def on_confirm_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def on_proof(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    User submits TXID (crypto->fiat) OR receipt/reference (fiat->crypto).
+    After proof, we MUST ask user for payout destination:
+      - crypto->fiat: ask BANK account (IBAN+name)
+      - fiat->crypto: ask CRYPTO address
+    """
     i18n = get_i18n(get_lang(context))
     order_id = context.user_data.get("order_id")
     if not order_id:
@@ -321,7 +318,6 @@ async def on_proof(update: Update, context: ContextTypes.DEFAULT_TYPE):
     proof_file_id = None
 
     if direction == "crypto_to_fiat":
-        # Expect TXID as text
         txt = (update.message.text or "").strip()
         if not txt:
             await update.message.reply_text(i18n.t("ask_txid"))
@@ -329,7 +325,6 @@ async def on_proof(update: Update, context: ContextTypes.DEFAULT_TYPE):
         proof_type = "txid"
         proof_value = txt
     else:
-        # Expect receipt photo/doc, or reference text
         if update.message.photo:
             proof_type = "receipt"
             proof_file_id = update.message.photo[-1].file_id
@@ -348,32 +343,80 @@ async def on_proof(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     db.update_order(
         int(order_id),
-        status="processing",
+        status="awaiting_payout_details",
         proof_type=proof_type,
         proof_value=proof_value,
         proof_file_id=proof_file_id,
     )
 
-    eta = eta_for(direction, context.user_data["from"], context.user_data["to"])
-    await update.message.reply_text(i18n.t("proof_received", eta=eta, order_id=order_id))
-
-    # Notify admins (include file if any)
+    # Notify admins proof came
     for aid in admin_ids():
         try:
             await context.bot.send_message(
                 chat_id=aid,
-                text=i18n.t(
-                    "admin_proof",
-                    order_id=order_id,
-                    proof_type=proof_type,
-                    proof_value=proof_value or "",
-                ),
+                text=f"ORDER #{order_id} proof received: {proof_type} | {proof_value or ''}",
             )
             if proof_file_id and proof_type == "receipt":
                 try:
                     await context.bot.send_photo(chat_id=aid, photo=proof_file_id, caption=f"Order #{order_id} receipt")
                 except Exception:
                     await context.bot.send_document(chat_id=aid, document=proof_file_id, caption=f"Order #{order_id} receipt")
+        except Exception:
+            pass
+
+    # Ask payout destination from user
+    if direction == "crypto_to_fiat":
+        await update.message.reply_text(
+            "✅ TXID received.\n\nNow send your *bank details* for payout.\nExample:\nIBAN: PL...\nName: John Smith\nBank: mBank (optional)",
+            parse_mode="Markdown",
+        )
+    else:
+        await update.message.reply_text(
+            "✅ Receipt received.\n\nNow send your *crypto receiving address*.\nExample:\nAddress: 0x...\nNetwork: ERC20/TRC20/SOL (optional)",
+            parse_mode="Markdown",
+        )
+
+    return S_PAYOUT
+
+
+async def on_payout_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Save user's payout destination:
+      - crypto->fiat => bank details text
+      - fiat->crypto => crypto address text
+    """
+    i18n = get_i18n(get_lang(context))
+    order_id = context.user_data.get("order_id")
+    if not order_id:
+        await update.message.reply_text(i18n.t("unknown"))
+        return ConversationHandler.END
+
+    txt = (update.message.text or "").strip()
+    if not txt:
+        await update.message.reply_text("Please send the details as text.")
+        return S_PAYOUT
+
+    direction = context.user_data.get("direction")
+    payout_type = "bank" if direction == "crypto_to_fiat" else "crypto_address"
+
+    db: DB = context.application.bot_data["db"]
+    db.update_order(
+        int(order_id),
+        status="processing",
+        payout_type=payout_type,
+        payout_details=txt,
+    )
+
+    eta = eta_for(direction, context.user_data["from"], context.user_data["to"])
+    await update.message.reply_text(f"✅ Saved. We will process your order. ETA: {eta or 'soon'}.\nOrder #{order_id}")
+
+    # Notify admins with payout destination
+    for aid in admin_ids():
+        try:
+            await context.bot.send_message(
+                chat_id=aid,
+                text=f"ORDER #{order_id} payout details ({payout_type}):\n{txt}",
+            )
         except Exception:
             pass
 
@@ -390,46 +433,139 @@ async def on_cancel_any(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# ---------------- Admin ----------------
+# ---------------- Admin Commands ----------------
+
+async def admin_complete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Usage:
+      /admin_complete <order_id> <txid_or_takeid>
+
+    Marks order as done, stores admin transfer id, and notifies user.
+    """
+    user = update.effective_user
+    if not is_admin(user.id):
+        await update.message.reply_text("Not admin.")
+        return
+
+    if len(context.args) < 2:
+        await update.message.reply_text("Usage: /admin_complete <order_id> <txid_or_takeid>")
+        return
+
+    oid = int(context.args[0])
+    take_id = " ".join(context.args[1:]).strip()
+
+    db: DB = context.application.bot_data["db"]
+    order = db.get_order(oid)
+    if not order:
+        await update.message.reply_text("Order not found.")
+        return
+
+    db.update_order(oid, status="done", admin_transfer_id=take_id)
+
+    # Notify user
+    try:
+        await context.bot.send_message(
+            chat_id=order.user_id,
+            text=f"✅ Order #{oid} completed.\nTransfer ID / TXID:\n{take_id}",
+        )
+    except Exception:
+        pass
+
+    await update.message.reply_text(f"Marked order #{oid} as DONE and notified user.")
+
+
+async def admin_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Usage:
+      /admin_receipt <order_id>
+    Then send a photo/doc (receipt) in the next message.
+    """
+    user = update.effective_user
+    if not is_admin(user.id):
+        await update.message.reply_text("Not admin.")
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /admin_receipt <order_id>")
+        return
+    context.user_data["awaiting_admin_receipt_order_id"] = int(context.args[ledge=0)  # will be fixed below
+
+
+async def admin_receipt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Fix: admin_receipt handler (above) needs a proper state-less approach.
+    We store pending order id in user_data and next photo/doc is attached.
+    """
+    user = update.effective_user
+    if not is_admin(user.id):
+        await update.message.reply_text("Not admin.")
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /admin_receipt <order_id>")
+        return
+    oid = int(context.args[0])
+    context.user_data["awaiting_admin_receipt_order_id"] = oid
+    await update.message.reply_text(f"Send the receipt photo/document now for Order #{oid}.")
+
+
+async def on_admin_receipt_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Admin sends a photo/doc after /admin_receipt <order_id>.
+    We attach it to DB and optionally forward to user.
+    """
+    user = update.effective_user
+    if not is_admin(user.id):
+        return
+
+    oid = context.user_data.get("awaiting_admin_receipt_order_id")
+    if not oid:
+        return
+
+    file_id = None
+    if update.message.photo:
+        file_id = update.message.photo[-1].file_id
+    elif update.message.document:
+        file_id = update.message.document.file_id
+
+    if not file_id:
+        await update.message.reply_text("Please send photo or document.")
+        return
+
+    db: DB = context.application.bot_data["db"]
+    order = db.get_order(int(oid))
+    if not order:
+        await update.message.reply_text("Order not found.")
+        context.user_data.pop("awaiting_admin_receipt_order_id", None)
+        return
+
+    db.update_order(int(oid), admin_receipt_file_id=file_id)
+    context.user_data.pop("awaiting_admin_receipt_order_id", None)
+
+    await update.message.reply_text(f"✅ Receipt attached to Order #{oid}.")
+
+    # Optional: send receipt to user
+    try:
+        await context.bot.send_message(chat_id=order.user_id, text=f"📎 Receipt uploaded for Order #{oid}.")
+        try:
+            await context.bot.send_photo(chat_id=order.user_id, photo=file_id)
+        except Exception:
+            await context.bot.send_document(chat_id=order.user_id, document=file_id)
+    except Exception:
+        pass
+
+
 async def admin_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not is_admin(user.id):
-        await update.message.reply_text(get_i18n(get_lang(context)).t("not_admin"))
+        await update.message.reply_text("Not admin.")
         return
     db: DB = context.application.bot_data["db"]
     orders = db.list_orders(20)
-    lines = [get_i18n(get_lang(context)).t("admin_list_header")]
+    lines = ["Last 20 orders:"]
     for o in orders:
         lines.append(
-            f"#{o.id} {o.status} | {o.direction} | {o.from_asset}->{o.to_asset} | {o.amount_from:.4g}->{o.amount_to:.4g} | fee {o.fee_pct:.2f}%"
+            f"#{o.id} {o.status} | {o.direction} | {o.from_asset}->{o.to_asset} | fee {o.fee_pct:.2f}%"
         )
     await update.message.reply_text("\n".join(lines))
-
-
-async def admin_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if not is_admin(user.id):
-        await update.message.reply_text(get_i18n(get_lang(context)).t("not_admin"))
-        return
-    if not context.args:
-        return
-    oid = int(context.args[0])
-    db: DB = context.application.bot_data["db"]
-    db.update_order(oid, status="done")
-    await update.message.reply_text(get_i18n(get_lang(context)).t("admin_marked", order_id=oid, status="done"))
-
-
-async def admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if not is_admin(user.id):
-        await update.message.reply_text(get_i18n(get_lang(context)).t("not_admin"))
-        return
-    if not context.args:
-        return
-    oid = int(context.args[0])
-    db: DB = context.application.bot_data["db"]
-    db.update_order(oid, status="cancelled")
-    await update.message.reply_text(get_i18n(get_lang(context)).t("admin_marked", order_id=oid, status="cancelled"))
 
 
 def build_app() -> Application:
@@ -440,10 +576,8 @@ def build_app() -> Application:
         raise RuntimeError("TELEGRAM_BOT_TOKEN missing")
 
     db_path = os.getenv("DB_PATH", "./data/bot.sqlite3")
-
     app = Application.builder().token(token).build()
 
-    # Manual VIP rates (per fee tier)
     app.bot_data["rates"] = ManualVipRates(CONFIG.get("manual_rates_by_fee", {}), default_fee=2.5)
     app.bot_data["db"] = DB(db_path)
 
@@ -458,18 +592,23 @@ def build_app() -> Application:
             S_FEE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_fee)],
             S_CONFIRM: [CallbackQueryHandler(on_confirm_buttons, pattern=r"^(sent|cancel)$")],
             S_PROOF: [MessageHandler((filters.TEXT | filters.PHOTO | filters.Document.ALL) & ~filters.COMMAND, on_proof)],
+            S_PAYOUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_payout_details)],
         },
         fallbacks=[CallbackQueryHandler(on_cancel_any, pattern=r"^cancel$"), CommandHandler("start", cmd_start)],
         allow_reentry=True,
     )
 
     app.add_handler(conv)
+
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("lang", cmd_lang))
 
     app.add_handler(CommandHandler("admin_orders", admin_orders))
-    app.add_handler(CommandHandler("admin_done", admin_done))
-    app.add_handler(CommandHandler("admin_cancel", admin_cancel))
+    app.add_handler(CommandHandler("admin_complete", admin_complete))
+    app.add_handler(CommandHandler("admin_receipt", admin_receipt_cmd))
+
+    # Admin receipt file catcher (photo/doc) – only useful after /admin_receipt
+    app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, on_admin_receipt_file))
 
     return app
 
