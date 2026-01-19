@@ -22,6 +22,22 @@ class BinanceRates:
         self._symbols: set[str] = set()
         self._price_cache: Dict[Tuple[str, str], Tuple[float, float]] = {}  # (base,quote)->(ts,price)
 
+    # --- NEW: normalize stablecoins for pricing ---
+    @staticmethod
+    def _norm(asset: str) -> str:
+        """
+        Pricing normalization:
+        - USDT and USDC are priced as USDC
+        """
+        a = asset.upper()
+        if a in ("USDT", "USDC"):
+            return "USDC"
+        return a
+
+    @staticmethod
+    def _disp(asset: str) -> str:
+        return asset.upper()
+
     def _refresh_symbols(self) -> None:
         now = time.time()
         if self._symbols and (now - self._exchange_info_ts) < 3600:
@@ -94,87 +110,110 @@ class BinanceRates:
         - Crypto: USDT, USDC, SOL, ETH
         - Fiat: PLN, TRY
 
-        For TRY: bridge via USDTTRY.
-        For PLN: bridge via EUR using EURPLN and EURUSDT (inversion if needed).
+        NOTE (your requested behavior):
+        - If user chooses USDT, we price it as USDC (USDT/USDC normalized to USDC).
         """
-        f = from_asset.upper()
-        t = to_asset.upper()
+
+        # Keep what user selected for display
+        f_disp = self._disp(from_asset)
+        t_disp = self._disp(to_asset)
+
+        # Normalize for pricing (USDT -> USDC)
+        f = self._norm(f_disp)
+        t = self._norm(t_disp)
+
+        # Helper to show the user that USDT is being priced as USDC
+        def fmt(a_disp: str, a_norm: str) -> str:
+            return f"{a_disp}(priced as {a_norm})" if a_disp != a_norm else a_disp
+
+        f_show = fmt(f_disp, f)
+        t_show = fmt(t_disp, t)
 
         if f == t:
-            return RateQuote(rate=1.0, path=f"{f}->{t}")
+            # Even if user picked USDT->USDC, normalization makes them equal
+            return RateQuote(rate=1.0, path=f"{f_show}->{t_show}")
 
-        # First try direct market
+        # First try direct market using normalized symbols
         direct = self.get_price(f, t)
         if direct is not None:
-            return RateQuote(rate=direct, path=f"{f}->{t}")
+            return RateQuote(rate=direct, path=f"{f_show}->{t_show}")
 
         crypto = {"USDT", "USDC", "SOL", "ETH"}
         fiat = {"PLN", "TRY"}
 
-        if f in crypto and t in crypto:
-            # Bridge through USDT
-            f_usdt = self.get_price(f, "USDT") if f != "USDT" else 1.0
-            usdt_t = self.get_price("USDT", t) if t != "USDT" else 1.0
-            if f_usdt is None or usdt_t is None:
+        # IMPORTANT: treat normalized stables as crypto too
+        # (because f/t are normalized, they may be USDC not USDT)
+        crypto_norm = {"USDC", "SOL", "ETH"}  # USDT is normalized away
+        # But user can still pick USDT; f_disp/t_disp may include it.
+        # We check membership using normalized f/t against crypto_norm,
+        # and also allow original crypto set checks where needed.
+
+        if f in crypto_norm and t in crypto_norm:
+            # Bridge through USDC (instead of USDT)
+            f_usdc = self.get_price(f, "USDC") if f != "USDC" else 1.0
+            usdc_t = self.get_price("USDC", t) if t != "USDC" else 1.0
+            if f_usdc is None or usdc_t is None:
                 raise ValueError("No route on Binance for crypto pair")
-            return RateQuote(rate=f_usdt * usdt_t, path=f"{f}->USDT->{t}")
+            return RateQuote(rate=f_usdc * usdc_t, path=f"{f_show}->USDC->{t_show}")
 
         # Crypto -> Fiat
-        if f in crypto and t in fiat:
-            f_usdt = self.get_price(f, "USDT") if f != "USDT" else 1.0
-            if f_usdt is None:
-                raise ValueError("No USDT route for crypto")
-            if t == "TRY":
-                usdt_try = self.get_price("USDT", "TRY")
-                if usdt_try is None:
-                    raise ValueError("USDTTRY not available")
-                return RateQuote(rate=f_usdt * usdt_try, path=f"{f}->USDT->TRY")
-            if t == "PLN":
-                # USDT -> EUR via EURUSDT (invert)
-                eur_usdt = self.get_price("EUR", "USDT")
+        if f in crypto_norm and t_disp in fiat:
+            f_usdc = self.get_price(f, "USDC") if f != "USDC" else 1.0
+            if f_usdc is None:
+                raise ValueError("No USDC route for crypto")
+
+            if t_disp == "TRY":
+                usdc_try = self.get_price("USDC", "TRY")
+                if usdc_try is None:
+                    raise ValueError("USDCTRY not available")
+                return RateQuote(rate=f_usdc * usdc_try, path=f"{f_show}->USDC->TRY")
+
+            if t_disp == "PLN":
+                # USDC -> EUR via EURUSDC (invert if needed), then EUR->PLN
+                eur_usdc = self.get_price("EUR", "USDC")
                 eur_pln = self.get_price("EUR", "PLN")
-                if eur_usdt is None or eur_usdt == 0 or eur_pln is None:
-                    raise ValueError("EUR bridges (EURUSDT/EURPLN) not available")
-                usdt_eur = 1.0 / eur_usdt
-                usdt_pln = usdt_eur * eur_pln
-                return RateQuote(rate=f_usdt * usdt_pln, path=f"{f}->USDT->EUR->PLN")
+                if eur_usdc is None or eur_usdc == 0 or eur_pln is None:
+                    raise ValueError("EUR bridges (EURUSDC/EURPLN) not available")
+                usdc_eur = 1.0 / eur_usdc
+                usdc_pln = usdc_eur * eur_pln
+                return RateQuote(rate=f_usdc * usdc_pln, path=f"{f_show}->USDC->EUR->PLN")
 
         # Fiat -> Crypto
-        if f in fiat and t in crypto:
-            if f == "TRY":
-                usdt_try = self.get_price("USDT", "TRY")
-                if usdt_try is None or usdt_try == 0:
-                    raise ValueError("USDTTRY not available")
-                # 1 TRY = (1/usdt_try) USDT
-                try_usdt = 1.0 / usdt_try
-                usdt_to_t = self.get_price("USDT", t) if t != "USDT" else 1.0
-                if usdt_to_t is None or usdt_to_t == 0:
-                    raise ValueError("No USDT route for crypto")
-                return RateQuote(rate=try_usdt * usdt_to_t, path=f"TRY->USDT->{t}")
+        if f_disp in fiat and t in crypto_norm:
+            if f_disp == "TRY":
+                usdc_try = self.get_price("USDC", "TRY")
+                if usdc_try is None or usdc_try == 0:
+                    raise ValueError("USDCTRY not available")
+                # 1 TRY = (1/usdc_try) USDC
+                try_usdc = 1.0 / usdc_try
+                usdc_to_t = self.get_price("USDC", t) if t != "USDC" else 1.0
+                if usdc_to_t is None or usdc_to_t == 0:
+                    raise ValueError("No USDC route for crypto")
+                return RateQuote(rate=try_usdc * usdc_to_t, path=f"TRY->USDC->{t_show}")
 
-            if f == "PLN":
+            if f_disp == "PLN":
                 eur_pln = self.get_price("EUR", "PLN")
-                eur_usdt = self.get_price("EUR", "USDT")
-                if eur_pln is None or eur_pln == 0 or eur_usdt is None:
-                    raise ValueError("EUR bridges (EURPLN/EURUSDT) not available")
+                eur_usdc = self.get_price("EUR", "USDC")
+                if eur_pln is None or eur_pln == 0 or eur_usdc is None:
+                    raise ValueError("EUR bridges (EURPLN/EURUSDC) not available")
                 # 1 PLN = (1/eur_pln) EUR
                 pln_eur = 1.0 / eur_pln
-                # EUR -> USDT
-                eur_to_usdt = eur_usdt
-                pln_usdt = pln_eur * eur_to_usdt
-                usdt_to_t = self.get_price("USDT", t) if t != "USDT" else 1.0
-                if usdt_to_t is None:
-                    raise ValueError("No USDT route for crypto")
-                return RateQuote(rate=pln_usdt * usdt_to_t, path=f"PLN->EUR->USDT->{t}")
+                # EUR -> USDC
+                eur_to_usdc = eur_usdc
+                pln_usdc = pln_eur * eur_to_usdc
+                usdc_to_t = self.get_price("USDC", t) if t != "USDC" else 1.0
+                if usdc_to_t is None:
+                    raise ValueError("No USDC route for crypto")
+                return RateQuote(rate=pln_usdc * usdc_to_t, path=f"PLN->EUR->USDC->{t_show}")
 
         # Fiat -> Fiat
-        if f in fiat and t in fiat:
-            direct = self.get_price(f, t)
+        if f_disp in fiat and t_disp in fiat:
+            direct = self.get_price(f_disp, t_disp)
             if direct is not None:
-                return RateQuote(rate=direct, path=f"{f}->{t}")
-            # Bridge via USDT
-            f_usdt = self.quote(f, "USDT").rate
-            usdt_t = self.quote("USDT", t).rate
-            return RateQuote(rate=f_usdt * usdt_t, path=f"{f}->USDT->{t}")
+                return RateQuote(rate=direct, path=f"{f_disp}->{t_disp}")
+            # Bridge via USDC
+            f_usdc = self.quote(f_disp, "USDC").rate
+            usdc_t = self.quote("USDC", t_disp).rate
+            return RateQuote(rate=f_usdc * usdc_t, path=f"{f_disp}->USDC->{t_disp}")
 
         raise ValueError("Unsupported conversion")
