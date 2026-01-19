@@ -180,7 +180,8 @@ async def on_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     rates: BinanceRates = context.application.bot_data["rates"]
     try:
-        quote = rates.quote(from_asset, to_asset)
+        quote = rates.quote(from_asset, to_asset, fee_pct=fee_pct)
+        
     except Exception as e:
         logger.exception("rate error")
         await update.message.reply_text(i18n.t("unknown"))
