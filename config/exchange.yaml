@@ -8,28 +8,28 @@
 manual_rates_by_fee:
 
   "1":
-    USDC_TRY: 32.50
-    USDC_PLN: 4.10
-    ETH_USDC: 3400
-    SOL_USDC: 145
+    USDC_TRY: 43.30
+    USDC_PLN: 3.60
+    ETH_USDC: 2966.63
+    SOL_USDC: 127.43
 
   "1.5":
-    USDC_TRY: 32.40
-    USDC_PLN: 4.08
-    ETH_USDC: 3380
-    SOL_USDC: 144
+    USDC_TRY: 43.30
+    USDC_PLN: 3.60
+    ETH_USDC: 2966.63
+    SOL_USDC: 127.43
 
   "2":
-    USDC_TRY: 32.30
-    USDC_PLN: 4.06
-    ETH_USDC: 3360
-    SOL_USDC: 143
+    USDC_TRY: 43.30
+    USDC_PLN: 3.60
+    ETH_USDC: 2966.63
+    SOL_USDC: 127.43
 
   "2.5":   # DEFAULT (if no code / invalid code)
-    USDC_TRY: 32.10
-    USDC_PLN: 4.02
-    ETH_USDC: 3320
-    SOL_USDC: 141
+    USDC_TRY: 43.30
+    USDC_PLN: 3.60
+    ETH_USDC: 2966.63
+    SOL_USDC: 127.43
 
 
 # ================================
@@ -42,19 +42,19 @@ crypto_deposit_addresses:
 
   USDT:
     network: TRC20
-    address: "TXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+    address: "TR5HhQNXTF5ERDYm71gWgYZfUeCDozm2NA"
 
   USDC:
     network: ERC20
-    address: "0xXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+    address: "0x29b5e13ab0f7447be921a4c3263f57628e348fdb"
 
   ETH:
     network: ERC20
-    address: "0xXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+    address: "0x29b5e13ab0f7447be921a4c3263f57628e348fdb"
 
   SOL:
     network: SOLANA
-    address: "XXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+    address: "C4c7y6UuYvoyLBBxgKGTygGR9CbsSQwFNpcC6TLcc1cd"
 
 
 # ================================
@@ -85,17 +85,17 @@ estimated_transfer_times:
 
   crypto_to_fiat:
     USDT_TRY: "5–30 minutes"
-    USDT_PLN: "30–120 minutes"
+    USDT_PLN: "10-120 minutes"
     USDC_TRY: "5–30 minutes"
     ETH_TRY: "15–45 minutes"
-    ETH_PLN: "1–3 hours"
-    SOL_TRY: "5–20 minutes"
+    ETH_PLN: "10-120 minutes"
+    SOL_TRY: "5–30 minutes"
 
   fiat_to_crypto:
-    TRY_USDT: "5–15 minutes"
+    TRY_USDT: "10–30 minutes"
     PLN_USDT: "30–90 minutes"
-    TRY_ETH: "15–45 minutes"
-    PLN_ETH: "1–3 hours"
+    TRY_ETH: "30–90 minutes"
+    PLN_ETH: "30–90 minutes"
 
 
 # ================================
